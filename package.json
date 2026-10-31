@@ -1,9 +1,9 @@
 {
-  "name": "opencode-context-usage",
+  "name": "nextcode",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "OpenCode TUI plugin that lists cached / uncached / output / total token usage in the sidebar",
+  "description": "OpenCode TUI plugin",
   "exports": {
     "./tui": "./tui.tsx"
   },

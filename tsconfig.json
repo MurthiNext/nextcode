@@ -12,5 +12,5 @@
     "skipLibCheck": true,
     "verbatimModuleSyntax": true
   },
-  "include": ["tui.tsx", "tui.test.tsx", "src/**/*.ts"]
+  "include": ["tui.tsx", "src/**/*.ts"]
 }
