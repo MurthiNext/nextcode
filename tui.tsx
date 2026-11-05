@@ -4,7 +4,7 @@ import { jumpLayer } from "./src/jump"
 import { UsageBlock } from "./src/UsageBlock"
 
 export default Plugin.define({
-    id: "session-usage",
+    id: "nextcode",
     setup(context) {
         const sessionID = () => {
             const route = context.ui.router.current()
