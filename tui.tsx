@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { Plugin } from "@opencode/plugin/tui"
-import { jumpLayer } from "./src/jump"
+import { quickJumpLayer } from "./src/quickjump"
 import { UsageBlock } from "./src/UsageBlock"
 
 export default Plugin.define({
@@ -17,7 +17,7 @@ export default Plugin.define({
         })
 
         context.keymap.layer(() =>
-            jumpLayer(context, sessionID, (commandID) => context.keymap.dispatch(commandID)),
+            quickJumpLayer(context, sessionID, (commandID) => context.keymap.dispatch(commandID)),
         )
     },
 })

@@ -4,6 +4,7 @@ import { AstQuery } from "./query"
 import { AstRewrite } from "./rewrite"
 import { FileScope, languageFor } from "./scope"
 import { AstError, LIMITS, publicRange, type AstInput, type Execution } from "./types"
+import { AST_GUIDANCE } from "./prompt"
 
 const properties = {
     action: { type: "string", enum: ["outline", "search", "locate", "rewrite", "apply"] },
@@ -173,7 +174,7 @@ export class AstTool {
     }
 }
 
-export async function registerAstTool(context: Plugin.Context): Promise<() => void> {
+export async function registerAstTool(context: Plugin.Context): Promise<() => Promise<void>> {
     const tool = new AstTool()
     await context.tool.transform((editor) => {
         editor.add({
@@ -209,5 +210,11 @@ export async function registerAstTool(context: Plugin.Context): Promise<() => vo
             },
         })
     })
-    return () => tool.clear()
+    const guidance = await context.session.hook("context", (event) => {
+        event.system.push({ type: "text", text: AST_GUIDANCE })
+    })
+    return async () => {
+        tool.clear()
+        await guidance.dispose()
+    }
 }

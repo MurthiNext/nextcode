@@ -1,10 +1,9 @@
 import type { Plugin } from "@opencode/plugin/tui"
-import { nextCommand } from "./prompt"
+import { NEXT_PROMPT, PREVIOUS_PROMPT, nextCommand } from "./quickjump-navigation"
 
-export const PREVIOUS_PROMPT = "session.message.user.previous"
-export const NEXT_PROMPT = "session.message.user.next"
+export { NEXT_PROMPT, PREVIOUS_PROMPT }
 
-export interface JumpLayer {
+export interface QuickJumpLayer {
     readonly mode: "global"
     readonly priority: number
     readonly commands: readonly {
@@ -16,11 +15,11 @@ export interface JumpLayer {
     }[]
 }
 
-export function jumpLayer(
+export function quickJumpLayer(
     context: Plugin.Context,
     sessionID: () => string | undefined,
     dispatch: (commandID: string) => void,
-): JumpLayer {
+): QuickJumpLayer {
     return {
         mode: "global",
         priority: 10,

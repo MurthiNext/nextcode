@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import type { Plugin } from "@opencode/plugin/tui"
 import { For, Show, createMemo } from "solid-js"
-import { formatCount, summarize } from "./tokens"
+import { formatCount, summarize } from "./usage"
 
 type Context = Plugin.Context
 
