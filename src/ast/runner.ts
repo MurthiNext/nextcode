@@ -22,6 +22,7 @@ export class AstRunner {
             stdin: options.stdin ?? "ignore",
             stdout: "pipe",
             stderr: "pipe",
+            windowsHide: true,
         })
         const timer = setTimeout(() => controller.abort(new AstError("TIMEOUT", "AST query timed out. Narrow paths or simplify the rule.")), LIMITS.timeout)
         const stop = () => child.kill()

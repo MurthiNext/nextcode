@@ -123,7 +123,7 @@ export class AstRewrite {
                 let leftover: string | undefined
                 if (staged) {
                     try {
-                        const child = Bun.spawn(["trash", staged], { stdout: "ignore", stderr: "ignore" })
+                        const child = Bun.spawn(["trash", staged], { stdout: "ignore", stderr: "ignore", windowsHide: true })
                         if (await child.exited !== 0) leftover = staged
                     } catch { leftover = staged }
                 }

@@ -28,7 +28,7 @@ export function scratchRoot(): string {
 }
 
 export async function run(command: string, args: string[], cwd?: string): Promise<string> {
-    const child = Bun.spawn([command, ...args], { cwd, stdout: "pipe", stderr: "pipe" })
+    const child = Bun.spawn([command, ...args], { cwd, stdout: "pipe", stderr: "pipe", windowsHide: true })
     const [stdout, stderr] = await Promise.all([
         new Response(child.stdout as ReadableStream).text(),
         new Response(child.stderr as ReadableStream).text(),
@@ -55,7 +55,7 @@ export async function javaMajor(path: string): Promise<number | undefined> {
 }
 
 async function probe(path: string, args: string[], stderr = false): Promise<string> {
-    const child = Bun.spawn([path, ...args], { stdout: "pipe", stderr: "pipe" })
+    const child = Bun.spawn([path, ...args], { stdout: "pipe", stderr: "pipe", windowsHide: true })
     const [out, err] = await Promise.all([
         new Response(child.stdout as ReadableStream).text(),
         new Response(child.stderr as ReadableStream).text(),
