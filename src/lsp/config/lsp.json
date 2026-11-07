@@ -1,0 +1,34 @@
+{
+    "python": {
+        "package": "pyright",
+        "version": "1.1.414",
+        "server": "langserver.index.js"
+    },
+    "typescript": {
+        "languageServer": {
+            "package": "typescript-language-server",
+            "version": "6.0.3",
+            "entry": "lib/cli.mjs"
+        },
+        "compiler": {
+            "version": "6.0.3"
+        }
+    },
+    "java": {
+        "jdt": {
+            "version": "1.63.0",
+            "build": "202610191322",
+            "base": "https://download.eclipse.org/jdtls/milestones"
+        },
+        "jdk": {
+            "feature": 25,
+            "version": "25.0.5",
+            "vendor": "eclipse",
+            "api": "https://api.adoptium.net/v3/assets/latest"
+        }
+    },
+    "node": {
+        "version": "26.13.0",
+        "base": "https://nodejs.org/dist"
+    }
+}
