@@ -2,6 +2,7 @@ import type { Plugin } from "@opencode/plugin"
 import { readFile } from "node:fs/promises"
 import { isAbsolute, resolve } from "node:path"
 import { Error as ToolError } from "@opencode/plugin/promise/tool"
+import config from "./config/lsp.json"
 import { cacheRoot } from "./installer"
 import { formatFile, relativeLabel } from "./format"
 import { LspManager } from "./manager"
@@ -130,7 +131,7 @@ export async function registerLspTool(context: Plugin.Context, options: LspToolO
     const registration = await context.tool.transform((editor) => {
         editor.add({
             name: "lsp",
-            description: "Read syntax and semantic diagnostics for Java, Python and JS/TS/TSX from a persistent language server. Edits are checked automatically; use this to wait out a cold start or Java indexing, or to confirm that a fix cleared previous errors. Lines are one-based and columns count Unicode code points. This is type-aware analysis, not a build or test run.",
+            description: `Read syntax and semantic diagnostics for Java, Python and JS/TS/TSX from a persistent language server. Edits are checked automatically; use this to wait out a cold start or Java indexing, or to confirm that a fix cleared previous errors. A server starts only when its runtime is already installed locally (JDK ${config.java.jdk.feature}+ for Java, Python 3 for pyright, Node.js 18+ for JS/TS); runtimes are never downloaded. Lines are one-based and columns count Unicode code points. This is type-aware analysis, not a build or test run.`,
             input: inputSchema,
             output: outputSchema,
             options: { codemode: true },
@@ -171,7 +172,7 @@ export async function requiresInstall(paths: readonly string[], directory: strin
         try {
             await resolveServer(family, root, { install: false })
         } catch (error) {
-            if (error instanceof LspError && error.code.startsWith("MISSING")) return error.message
+            if (error instanceof LspError && error.code === "MISSING_SERVER") return error.message
         }
     }
     return undefined

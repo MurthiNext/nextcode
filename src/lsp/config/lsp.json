@@ -16,19 +16,12 @@
     },
     "java": {
         "jdt": {
-            "version": "1.63.0",
-            "build": "202610191322",
+            "version": "1.43.0",
+            "build": "202412191447",
             "base": "https://download.eclipse.org/jdtls/milestones"
         },
         "jdk": {
-            "feature": 25,
-            "version": "25.0.5",
-            "vendor": "eclipse",
-            "api": "https://api.adoptium.net/v3/assets/latest"
+            "feature": 17
         }
-    },
-    "node": {
-        "version": "26.13.0",
-        "base": "https://nodejs.org/dist"
     }
 }

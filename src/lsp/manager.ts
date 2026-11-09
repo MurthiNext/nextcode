@@ -183,7 +183,7 @@ export class LspManager {
             if (warm && !warm.crashed) return warm
         }
         if (state.status === "starting") return undefined
-        if (state.status === "failed" && !install && Date.now() < state.retryAt) return undefined
+        if (state.status === "failed" && Date.now() < state.retryAt) return undefined
         state.status = "starting"
         state.error = undefined
         const launched = this.launch(state, install)
@@ -205,7 +205,7 @@ export class LspManager {
         } catch (error) {
             state.status = "failed"
             state.error = error instanceof LspError ? error.message : error instanceof Error ? error.message : String(error)
-            state.retryAt = Date.now() + 20_000
+            state.retryAt = Date.now() + (error instanceof LspError && error.code === "MISSING_RUNTIME" ? 300_000 : 20_000)
             return undefined
         }
     }

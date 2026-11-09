@@ -5,8 +5,8 @@ import config from "./config/lsp.json"
 import type { ServerSpec } from "./client"
 import { fileExists } from "./fs"
 import {
-    installJava, installJdtls, installNode, installPackage, javaMajor, packagedScript,
-    resolveJava, resolveNode, runtimeDirectory, serverDirectory,
+    findOnPath, installJdtls, installPackage, javaMajor, packagedScript, pythonMajor,
+    resolveJava, resolveNode, resolvePython, runtimeDirectory, serverDirectory,
 } from "./installer"
 import { LspError } from "./types"
 
@@ -59,14 +59,15 @@ export async function resolveServer(family: Family, root: string, options: { ins
 }
 
 async function pythonServer(root: string, options: { install: boolean }): Promise<ResolvedServer> {
-    const entry = await pythonEntry(root, options)
+    await requirePython()
     const interpreter = await pythonInterpreter(root)
+    const launcher = await pythonLauncher(root, options)
     return {
         name: `pyright ${config.python.version}`,
         spec: {
             name: "pyright",
-            command: await requireNode(options),
-            args: [entry, "--stdio"],
+            command: launcher.command,
+            args: launcher.args,
             cwd: root,
             settings: {
                 python: {
@@ -80,24 +81,26 @@ async function pythonServer(root: string, options: { install: boolean }): Promis
     }
 }
 
-async function pythonEntry(root: string, options: { install: boolean }): Promise<string> {
+async function pythonLauncher(root: string, options: { install: boolean }): Promise<{ command: string; args: string[] }> {
+    const standalone = await findOnPath("pyright-langserver")
+    if (standalone) return { command: standalone, args: ["--stdio"] }
     const configured = process.env.OPENCODE_LSP_PYRIGHT
-    if (configured && await fileExists(configured)) return configured
-    const local = await packageEntry(root, "pyright", config.python.server)
-    if (local) return local
+    const local = configured && await fileExists(configured) ? configured : await packageEntry(root, "pyright", config.python.server)
+    if (local) return { command: await requireNode(), args: [local, "--stdio"] }
     const directory = serverDirectory("pyright", config.python.version)
     const managed = packagedScript(directory, "pyright", config.python.server)
-    if (await fileExists(managed)) return managed
-    if (!options.install) throw new LspError("MISSING_SERVER", `pyright ${config.python.version} is not installed. Set OPENCODE_LSP_PYRIGHT or enable lsp.install.`)
-    await installPackage(directory, { pyright: config.python.version }, "nextcode-pyright")
-    if (!await fileExists(managed)) throw new LspError("INSTALL", "The pyright package does not contain a language server entrypoint.")
-    return managed
+    if (!await fileExists(managed)) {
+        if (!options.install) throw new LspError("MISSING_SERVER", `pyright ${config.python.version} is not installed. Install pyright-langserver, set OPENCODE_LSP_PYRIGHT or enable lsp.install.`)
+        await installPackage(directory, { pyright: config.python.version }, "nextcode-pyright")
+        if (!await fileExists(managed)) throw new LspError("INSTALL", "The pyright package does not contain a language server entrypoint.")
+    }
+    return { command: await requireNode(), args: [managed, "--stdio"] }
 }
 
 async function javascriptServer(root: string, options: { install: boolean }): Promise<ResolvedServer> {
     const configured = process.env.OPENCODE_LSP_TYPESCRIPT
     if (configured && await fileExists(configured)) {
-        const node = await requireNode(options)
+        const node = await requireNode()
         return { name: "TypeScript · configured", spec: { name: "typescript", command: node, args: [configured, "--stdio"], cwd: root } }
     }
     const native = await nativeTypeScript(root)
@@ -115,7 +118,7 @@ async function javascriptServer(root: string, options: { install: boolean }): Pr
             },
         }
     }
-    const node = await requireNode(options)
+    const node = await requireNode()
     const local = await packageEntry(root, "typescript-language-server", "lib/cli.mjs")
     if (local) return { name: "TypeScript · project", spec: languageServerSpec(local, root, node) }
     const directory = serverDirectory("typescript-language-server", config.typescript.languageServer.version)
@@ -147,10 +150,10 @@ function languageServerSpec(entry: string, root: string, node: string, tsdk?: st
 }
 
 async function javaServer(root: string, options: { install: boolean }): Promise<ResolvedServer> {
+    const java = await requireJava()
     const jdtls = await jdtlsDirectory(options)
     const launcher = await launcherJar(jdtls)
     if (!launcher) throw new LspError("INSTALL", "The jdtls installation has no Equinox launcher.")
-    const java = await javaRuntime(options)
     const platform = process.platform === "win32" ? "config_win" : process.platform === "darwin" ? "config_mac" : "config_linux"
     const settings = {
         java: {
@@ -205,18 +208,22 @@ async function jdtlsDirectory(options: { install: boolean }): Promise<string> {
     return installJdtls()
 }
 
-async function javaRuntime(options: { install: boolean }): Promise<string> {
+async function requireJava(): Promise<string> {
     const found = await resolveJava()
     if (found && ((await javaMajor(found)) ?? 0) >= config.java.jdk.feature) return found
-    if (!options.install) throw new LspError("MISSING_RUNTIME", `Eclipse JDT LS requires JDK ${config.java.jdk.feature} or newer. Set JAVA_HOME or enable lsp.install.`)
-    return installJava()
+    throw new LspError("MISSING_RUNTIME", `Eclipse JDT LS requires a local JDK ${config.java.jdk.feature} or newer. Install one or set JAVA_HOME / OPENCODE_LSP_JAVA; runtimes are never downloaded.`)
 }
 
-async function requireNode(options: { install: boolean }): Promise<string> {
+async function requireNode(): Promise<string> {
     const found = await resolveNode()
     if (found) return found
-    if (!options.install) throw new LspError("MISSING_RUNTIME", "A Node.js runtime is required for this language server.")
-    return installNode()
+    throw new LspError("MISSING_RUNTIME", "This language server needs a local Node.js 18 or newer runtime. Install one or set OPENCODE_LSP_NODE; runtimes are never downloaded.")
+}
+
+async function requirePython(): Promise<string> {
+    const found = await resolvePython()
+    if (found && ((await pythonMajor(found)) ?? 0) >= 3) return found
+    throw new LspError("MISSING_RUNTIME", "pyright needs a local Python 3 runtime. Install one or set OPENCODE_LSP_PYTHON; runtimes are never downloaded.")
 }
 
 async function launcherJar(directory: string): Promise<string | undefined> {
@@ -291,4 +298,3 @@ function workspaceKey(value: string): string {
     for (let index = 0; index < value.length; index++) result = (result * 31 + value.charCodeAt(index)) | 0
     return Math.abs(result).toString(36)
 }
-

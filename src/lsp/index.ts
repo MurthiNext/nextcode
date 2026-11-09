@@ -2,6 +2,7 @@ import type { Plugin } from "@opencode/plugin"
 import { readFile } from "node:fs/promises"
 import { isAbsolute, resolve } from "node:path"
 import { editsFromTool, isEditTool } from "./changes"
+import config from "./config/lsp.json"
 import { formatFile, relativeLabel } from "./format"
 import { LspManager } from "./manager"
 import { familyFor } from "./servers"
@@ -10,6 +11,7 @@ import { pathKey } from "./uri"
 
 const LSP_GUIDANCE = `# lsp
 Edits to Java, Python and JS/TS/TSX are checked by a persistent language server; its errors are attached to the edit result.
+- A server only starts when its runtime already exists locally: JDK ${config.java.jdk.feature}+ for Java, Python 3 for pyright, Node.js 18+ for JS/TS. Runtimes are never downloaded.
 - Use the lsp tool (action diagnostics) to wait out a cold start or Java indexing, or to confirm that a fix cleared earlier errors.
 - Only errors are reported automatically. Set warnings when warnings matter.
 - A pending check is not a passing check; do not claim the code is correct before it finishes.
@@ -70,7 +72,7 @@ export async function registerLsp(context: Plugin.Context, options: LspOptions):
         if (!supported.length) return
         const session = state(event.sessionID)
         for (const path of supported) session.paths.add(path)
-        const allowed = options.install ? await assertInstallAllowed(context, event, supported, directory).catch(() => true) : true
+        const allowed = options.install && await assertInstallAllowed(context, event, supported, directory).catch(() => false)
         const result = await manager.diagnose({ paths: supported, directory, ceiling: directory, wait: 800, startup: 900, install: allowed })
         const pending = result.files.filter((file) => file.phase !== "available")
         for (const file of result.files) {

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { mkdir, readdir, rename, rm, writeFile } from "node:fs/promises"
+import { mkdir, rename, rm, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { basename, join } from "node:path"
 import config from "./config/lsp.json"
@@ -54,6 +54,13 @@ export async function javaMajor(path: string): Promise<number | undefined> {
     return value
 }
 
+export async function pythonMajor(path: string): Promise<number | undefined> {
+    if (versions.has(path)) return versions.get(path)
+    const value = await probe(path, ["--version"]).then((output) => major(output)).catch(() => undefined)
+    versions.set(path, value)
+    return value
+}
+
 async function probe(path: string, args: string[], stderr = false): Promise<string> {
     const child = Bun.spawn([path, ...args], { stdout: "pipe", stderr: "pipe", windowsHide: true })
     const [out, err] = await Promise.all([
@@ -87,26 +94,22 @@ export async function resolveJava(): Promise<string | undefined> {
     return await findOnPath("java")
 }
 
+export async function resolvePython(): Promise<string | undefined> {
+    const configured = process.env.OPENCODE_LSP_PYTHON
+    if (configured && await fileExists(configured)) return configured
+    for (const name of WINDOWS ? ["python", "python3"] : ["python3", "python"]) {
+        const found = await findOnPath(name)
+        if (found && ((await pythonMajor(found)) ?? 0) >= 3) return found
+    }
+    return undefined
+}
+
 export function serverDirectory(name: string, version: string): string {
     return join(cacheRoot(), "servers", `${name}-${version}`)
 }
 
 export function runtimeDirectory(name: string): string {
     return join(cacheRoot(), "runtimes", name)
-}
-
-export async function download(url: string, destination: string, checksum?: string): Promise<void> {
-    await mkdir(join(destination, ".."), { recursive: true })
-    const response = await fetch(url, { redirect: "follow" })
-    if (!response.ok) throw new LspError("DOWNLOAD", `Download failed with ${response.status}: ${url}`)
-    const bytes = Buffer.from(await response.arrayBuffer())
-    if (checksum) {
-        const actual = createHash("sha256").update(bytes).digest("hex")
-        if (actual !== checksum.toLowerCase()) throw new LspError("CHECKSUM", `Checksum mismatch for ${basename(destination)}.`)
-    }
-    const temporary = `${destination}.${process.pid}.part`
-    await writeFile(temporary, bytes)
-    await rename(temporary, destination)
 }
 
 export async function extract(archive: string, destination: string): Promise<void> {
@@ -153,66 +156,6 @@ export function packagedScript(directory: string, module: string, entry: string)
     return join(directory, "node_modules", module, entry)
 }
 
-export async function installNode(): Promise<string> {
-    const version = config.node.version
-    const platform = WINDOWS ? "win" : process.platform === "darwin" ? "darwin" : "linux"
-    const architecture = process.arch === "arm64" ? "arm64" : "x64"
-    const extension = WINDOWS ? "zip" : "tar.gz"
-    const directory = runtimeDirectory(`node-${version}-${platform}-${architecture}`)
-    const binary = join(directory, WINDOWS ? "node.exe" : join("bin", "node"))
-    if (await fileExists(binary)) return binary
-    const release = await installLock(cacheRoot(), `node-${version}-${platform}-${architecture}`)
-    try {
-        if (await fileExists(binary)) return binary
-        const name = `node-v${version}-${platform}-${architecture}`
-        const archive = join(scratchRoot(), `${name}.${extension}`)
-        const sums = await fetch(`${config.node.base}/v${version}/SHASUMS256.txt`).then((response) => response.text())
-        const checksum = sums.split("\n").find((line) => line.endsWith(`${name}.${extension}`))?.split(/\s+/)[0]
-        await download(`${config.node.base}/v${version}/${name}.${extension}`, archive, checksum)
-        const staging = `${directory}.tmp-${process.pid}`
-        await rm(staging, { recursive: true, force: true })
-        await extract(archive, staging)
-        await replaceDirectory(join(staging, name), directory)
-        await rm(staging, { recursive: true, force: true })
-        await rm(archive, { force: true })
-        if (!await fileExists(binary)) throw new LspError("INSTALL", "The Node.js archive did not contain a usable binary.")
-        return binary
-    } finally {
-        await release()
-    }
-}
-
-export async function installJava(): Promise<string> {
-    const { feature, version: pinned, vendor, api } = config.java.jdk
-    const os = WINDOWS ? "windows" : process.platform === "darwin" ? "mac" : "linux"
-    const architecture = process.arch === "arm64" ? "aarch64" : "x64"
-    const directory = runtimeDirectory(`jdk-${pinned}-${os}-${architecture}`)
-    const binary = join(directory, "bin", WINDOWS ? "java.exe" : "java")
-    if (await fileExists(binary)) return binary
-    const release = await installLock(cacheRoot(), `jdk-${pinned}-${os}-${architecture}`)
-    try {
-        if (await fileExists(binary)) return binary
-        const response = await fetch(`${api}/${feature}/hotspot?architecture=${architecture}&image_type=jdk&os=${os}&vendor=${vendor}`)
-        if (!response.ok) throw new LspError("INSTALL", `No JDK ${feature} build is available for this platform.`)
-        const assets = await response.json() as { binary?: { package?: { link?: string; checksum?: string } } }[]
-        const asset = assets[0]?.binary?.package
-        if (!asset?.link) throw new LspError("INSTALL", `No JDK ${feature} build is available for this platform.`)
-        const archive = join(scratchRoot(), basename(asset.link))
-        await download(asset.link, archive, asset.checksum)
-        const staging = `${directory}.tmp-${process.pid}`
-        await rm(staging, { recursive: true, force: true })
-        await extract(archive, staging)
-        const entries = await readdir(staging)
-        await replaceDirectory(join(staging, entries.length === 1 ? entries[0] : "."), directory)
-        await rm(staging, { recursive: true, force: true })
-        await rm(archive, { force: true })
-        if (!await fileExists(binary)) throw new LspError("INSTALL", "The JDK archive did not contain a usable binary.")
-        return binary
-    } finally {
-        await release()
-    }
-}
-
 export async function installJdtls(): Promise<string> {
     const { version, build, base } = config.java.jdt
     const directory = serverDirectory("jdtls", `${version}-${build}`)
@@ -239,3 +182,16 @@ export async function installJdtls(): Promise<string> {
     }
 }
 
+async function download(url: string, destination: string, checksum?: string): Promise<void> {
+    await mkdir(join(destination, ".."), { recursive: true })
+    const response = await fetch(url, { redirect: "follow" })
+    if (!response.ok) throw new LspError("DOWNLOAD", `Download failed with ${response.status}: ${url}`)
+    const bytes = Buffer.from(await response.arrayBuffer())
+    if (checksum) {
+        const actual = createHash("sha256").update(bytes).digest("hex")
+        if (actual !== checksum.toLowerCase()) throw new LspError("CHECKSUM", `Checksum mismatch for ${basename(destination)}.`)
+    }
+    const temporary = `${destination}.${process.pid}.part`
+    await writeFile(temporary, bytes)
+    await rename(temporary, destination)
+}
