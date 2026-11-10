@@ -10,7 +10,7 @@ export const LIMITS = {
     frame: 32 * 1024 * 1024,
     servers: 6,
     documents: 48,
-    settleWindow: 5_000,
+    progressStale: 30_000,
     poll: 150,
     idle: 20 * 60 * 1000,
     lockWait: 300_000,

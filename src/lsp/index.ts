@@ -124,6 +124,7 @@ export async function registerLsp(context: Plugin.Context, options: LspOptions):
                 const blocks: string[] = []
                 for (const file of result.files) {
                     if (file.phase !== "pending") session?.stale.delete(file.path)
+                    if (file.phase === "pending") continue
                     const text = await readFile(file.path, "utf8").catch(() => undefined)
                     const block = formatFile(file, { root: directory, warnings: options.warnings, text })
                     if (block) blocks.push(block)

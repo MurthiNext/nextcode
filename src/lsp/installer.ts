@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import { mkdir, readdir, rename, rm, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
-import { basename, join } from "node:path"
+import { basename, dirname, join } from "node:path"
 import config from "./config/lsp.json"
 import { fileExists, installLock, replaceDirectory } from "./fs"
 import { LspError } from "./types"
@@ -92,6 +92,13 @@ export async function resolveJava(): Promise<string | undefined> {
         if (await fileExists(candidate)) return candidate
     }
     return await findOnPath("java")
+}
+
+export async function javaHome(java: string): Promise<string | undefined> {
+    const home = dirname(dirname(java))
+    if (!await fileExists(join(home, "bin", WINDOWS ? "java.exe" : "java"))) return undefined
+    if (!await fileExists(join(home, "lib", "modules")) && !await fileExists(join(home, "jmods"))) return undefined
+    return home
 }
 
 export async function resolvePython(): Promise<string | undefined> {

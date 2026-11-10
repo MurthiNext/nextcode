@@ -51,9 +51,9 @@ export class LspClient {
     readonly published = new Map<string, PublishedDiagnostics>()
     readonly stderr: string[] = []
     private readonly aliases = new Map<string, string>()
-    private readonly waiters = new Map<string, Set<() => void>>()
+    private readonly progress = new Map<string, string>()
+    private readonly progressAt = new Map<string, number>()
     private pullQueue: Promise<unknown> = Promise.resolve()
-    private readonly startedAt = Date.now()
     private stopped = false
     private exited = false
     private exitedPromise: Promise<void>
@@ -230,46 +230,33 @@ export class LspClient {
         const key = this.canonicalKey(path)
         const document = this.documents.get(key)
         if (!document) return { phase: "unavailable", diagnostics: [], reason: "Document is not open in the language server." }
-        if (this.crashed) return { phase: "unavailable", diagnostics: [], reason: "Language server exited." }
-        if (this.pullSupported) {
-            const pulled = await this.pull(key).catch(() => undefined)
-            if (pulled) {
-                // Right after start-up a project can answer with an empty set before its first analysis finishes.
-                const cold = document.version === 1 && !pulled.diagnostics.length && wait > 0
-                    && Date.now() - this.startedAt < LIMITS.settleWindow
-                if (!cold) return pulled
-                let latest = pulled
-                const deadline = Date.now() + Math.min(wait, LIMITS.maxWait)
-                while (Date.now() < deadline) {
-                    await new Promise((resolve) => setTimeout(resolve, Math.min(LIMITS.poll, deadline - Date.now())))
-                    const again = await this.pull(key).catch(() => undefined)
-                    if (!again) continue
-                    latest = again
-                    if (again.diagnostics.length) return again
-                }
-                return latest
-            }
-        }
-        const cached = this.published.get(key)
-        if (cached && this.fresh(cached, document)) {
-            return { phase: "available", diagnostics: cached.diagnostics, checkedAt: cached.at }
-        }
         const deadline = Date.now() + Math.max(0, Math.min(wait, LIMITS.maxWait))
-        while (Date.now() < deadline) {
-            const remaining = deadline - Date.now()
-            const latest = this.published.get(key)
-            if (latest && this.fresh(latest, document)) {
-                return { phase: "available", diagnostics: latest.diagnostics, checkedAt: latest.at }
-            }
-            const woken = await this.waitFor(key, remaining)
-            if (!woken && this.crashed) break
+        for (;;) {
+            const result = await this.probe(key, document)
+            if (result) return result
+            if (Date.now() >= deadline || this.crashed) break
+            await new Promise((resolve) => setTimeout(resolve, Math.min(LIMITS.poll, Math.max(0, deadline - Date.now()))))
         }
+        const result = await this.probe(key, document)
+        if (result) return result
+        if (this.crashed) return { phase: "unavailable", diagnostics: [], reason: "Language server exited." }
+        if (this.busy) return { phase: "pending", diagnostics: [], reason: `${this.busy.trim()} is still running.` }
         const latest = this.published.get(key)
-        if (latest && this.fresh(latest, document)) {
-            return { phase: "available", diagnostics: latest.diagnostics, checkedAt: latest.at }
-        }
         if (latest) return { phase: "stale", diagnostics: latest.diagnostics, checkedAt: latest.at, reason: "Diagnostics are older than the current file content." }
         return { phase: "pending", diagnostics: [], reason: "Language server has not reported diagnostics yet." }
+    }
+
+    private async probe(key: string, document: DocumentState): Promise<DiagnosticsResult | undefined> {
+        if (this.pullSupported) {
+            const pulled = await this.pull(key).catch(() => undefined)
+            if (pulled) return pulled
+        }
+        const published = this.published.get(key)
+        if (!published || !this.fresh(published, document)) return undefined
+        // JDTLS publishes an empty set from its first build, then publishes again once the
+        // workspace import finishes. Treat an empty publish while it is still working as pending.
+        if (this.busy && !published.diagnostics.length) return undefined
+        return { phase: "available", diagnostics: published.diagnostics, checkedAt: published.at }
     }
 
     private fresh(published: PublishedDiagnostics, document: DocumentState): boolean {
@@ -353,6 +340,17 @@ export class LspClient {
     }
 
     private handleNotify(method: string, params: unknown): void {
+        if (method === "$/progress") {
+            const value = (params as { token?: unknown; value?: { kind?: string; title?: string; message?: string } } | undefined)?.value
+            const token = String((params as { token?: unknown } | undefined)?.token ?? "")
+            if (!value || !token) return
+            if (value.kind === "begin") this.progress.set(token, value.title ?? value.message ?? "working")
+            else if (value.kind === "report") this.progress.set(token, value.message ?? this.progress.get(token) ?? "working")
+            else if (value.kind === "end") this.progress.delete(token)
+            else return
+            this.progressAt.set(token, Date.now())
+            return
+        }
         if (method !== "textDocument/publishDiagnostics") return
         const payload = params as { uri?: string; version?: number; diagnostics?: Diagnostic[] } | undefined
         const path = payload?.uri ? uriToPath(payload.uri) : undefined
@@ -364,38 +362,26 @@ export class LspClient {
         }
         const key = this.canonicalKey(path)
         this.published.set(key, entry)
-        this.wake(key)
     }
 
-    private waitFor(key: string, timeout: number): Promise<boolean> {
-        return new Promise((resolve) => {
-            let settled = false
-            const finish = (woken: boolean) => {
-                if (settled) return
-                settled = true
-                clearTimeout(timer)
-                this.waiters.get(key)?.delete(wake)
-                resolve(woken)
-            }
-            const wake = () => finish(true)
-            const timer = setTimeout(() => finish(false), Math.max(0, timeout))
-            const set = this.waiters.get(key) ?? new Set<() => void>()
-            set.add(wake)
-            this.waiters.set(key, set)
-            if (this.crashed) finish(false)
-        })
+    get busy(): string | undefined {
+        this.pruneProgress()
+        return [...this.progress.values()].at(-1)
     }
 
-    private wake(key: string): void {
-        for (const waiter of this.waiters.get(key) ?? []) waiter()
-        this.waiters.delete(key)
+    // A language server can begin a progress token and never end it (wedged Gradle import),
+    // so a token that stops reporting must stop blocking diagnostics.
+    private pruneProgress(): void {
+        for (const [token] of this.progress) {
+            if (Date.now() - (this.progressAt.get(token) ?? 0) < LIMITS.progressStale) continue
+            this.progress.delete(token)
+            this.progressAt.delete(token)
+        }
     }
 
     private markExited(): void {
         if (this.exited) return
         this.exited = true
         this.rpc.dispose("Language server exited.")
-        for (const key of [...this.waiters.keys()]) this.wake(key)
-        this.waiters.clear()
     }
 }

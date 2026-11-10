@@ -5,7 +5,7 @@ import config from "./config/lsp.json"
 import type { ServerSpec } from "./client"
 import { fileExists } from "./fs"
 import {
-    clangdBinary, findOnPath, installClangd, installJdtls, installPackage, javaMajor, packagedScript, pythonMajor,
+    clangdBinary, findOnPath, installClangd, installJdtls, installPackage, javaHome, javaMajor, packagedScript, pythonMajor,
     resolveJava, resolveNode, resolvePython, runtimeDirectory, serverDirectory,
 } from "./installer"
 import { LspError } from "./types"
@@ -189,19 +189,19 @@ async function javaServer(root: string, options: { install: boolean }): Promise<
     const launcher = await launcherJar(jdtls)
     if (!launcher) throw new LspError("INSTALL", "The jdtls installation has no Equinox launcher.")
     const platform = process.platform === "win32" ? "config_win" : process.platform === "darwin" ? "config_mac" : "config_linux"
-    const runtime = await resolveJava()
+    const home = await javaHome(java)
     const settings = {
         java: {
             import: { gradle: { enabled: true }, maven: { enabled: true } },
             completion: { guessMethodArguments: false },
             referencesCodeLens: { enabled: false },
             implementationsCodeLens: { enabled: false },
-            ...(runtime ? {
+            ...(home ? {
                 configuration: {
-                    runtimes: [{ name: `JavaSE-${config.java.jdk.feature}`, path: runtime, default: true }],
+                    runtimes: [{ name: `JavaSE-${config.java.jdk.feature}`, path: home, default: true }],
                 },
+                jdt: { ls: { java: { home } } },
             } : {}),
-            jdt: { ls: { java: { home: runtime ?? java } } },
         },
     }
     return {

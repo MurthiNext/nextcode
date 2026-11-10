@@ -14,7 +14,10 @@ export function formatFile(file: FileDiagnostic, options: FormatOptions): string
     if (file.phase === "unavailable") return `${label}: check unavailable — ${file.reason ?? "language server failed"}`
     const limit = options.warnings ? 2 : 1
     const shown = file.diagnostics.filter((diagnostic) => (diagnostic.severity ?? 1) <= limit)
-    if (!shown.length) return file.phase === "pending" ? `${label}: analysis pending; no result yet` : ""
+    if (!shown.length) {
+        if (file.phase !== "pending") return ""
+        return `${label}: analysis pending — ${file.reason ?? "the language server has not reported diagnostics yet"}`
+    }
     const lines: string[] = []
     let bytes = 0
     let omitted = 0
