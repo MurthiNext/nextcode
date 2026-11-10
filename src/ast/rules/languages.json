@@ -11,6 +11,18 @@
         "aliases": ["py"],
         "structures": ["class_definition", "function_definition", "decorated_definition", "lambda"]
     },
+    "c": {
+        "cli": "C",
+        "extensions": [".c"],
+        "aliases": ["c"],
+        "structures": ["function_definition", "declaration", "struct_specifier", "union_specifier", "enum_specifier", "type_definition", "preproc_def", "preproc_function_def"]
+    },
+    "cpp": {
+        "cli": "Cpp",
+        "extensions": [".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".h", ".ipp", ".inl"],
+        "aliases": ["cpp", "c++", "cc", "cxx"],
+        "structures": ["class_specifier", "struct_specifier", "union_specifier", "enum_specifier", "function_definition", "declaration", "namespace_definition", "template_declaration", "type_definition", "field_declaration"]
+    },
     "typescript": {
         "cli": "TypeScript",
         "extensions": [".ts", ".mts", ".cts"],

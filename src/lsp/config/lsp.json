@@ -23,5 +23,17 @@
         "jdk": {
             "feature": 17
         }
+    },
+    "c": {
+        "clangd": {
+            "version": "23.1.0",
+            "base": "https://github.com/clangd/clangd/releases/download",
+            "assets": {
+                "win32-x64": { "file": "clangd-windows-23.1.0.zip", "sha256": "23412a240756a162e7b98a282f36aa2a23a88db5ce16a0cbc4fef7253768c810" },
+                "linux-x64": { "file": "clangd-linux-23.1.0.zip", "sha256": "e53b1a96196095faedb7642cf64964f7fb9ad4a0c1f00dd2c172a3d9dcbafdfd" },
+                "darwin-x64": { "file": "clangd-mac-23.1.0.zip", "sha256": "1082e6638223b785ca2daf0939f13afcd0bb95c84ee9a4bbaff4745365159253" },
+                "darwin-arm64": { "file": "clangd-mac-23.1.0.zip", "sha256": "1082e6638223b785ca2daf0939f13afcd0bb95c84ee9a4bbaff4745365159253" }
+            }
+        }
     }
 }

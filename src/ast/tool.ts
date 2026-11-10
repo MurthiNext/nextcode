@@ -3,14 +3,29 @@ import { Error as ToolError } from "@opencode/plugin/promise/tool"
 import { AstQuery } from "./query"
 import { AstRewrite } from "./rewrite"
 import { FileScope, languageFor } from "./scope"
-import { AstError, LIMITS, publicRange, type AstInput, type Execution } from "./types"
+import { AstError, LIMITS, publicRange, type AstInput, type Execution, type OutlineEntry } from "./types"
 import { AST_GUIDANCE } from "./prompt"
 
+const actions = ["outline", "search", "locate", "rewrite", "apply"] as const
+
+function trimMembers(items: OutlineEntry[]): boolean {
+    for (let index = items.length - 1; index >= 0; index--) {
+        const members = items[index].members
+        if (!members?.length) continue
+        if (!trimMembers(members)) {
+            members.pop()
+            if (!members.length) delete items[index].members
+        }
+        return true
+    }
+    return false
+}
+
 const properties = {
-    action: { type: "string", enum: ["outline", "search", "locate", "rewrite", "apply"] },
-    paths: { type: "array", minItems: 1, maxItems: 20, items: { type: "string", minLength: 1, maxLength: 1024 }, description: "Files or directories relative to the current session directory. No globs or symbolic links." },
-    path: { type: "string", minLength: 1, maxLength: 1024 },
-    language: { type: "string", enum: ["java", "python", "py", "typescript", "ts", "tsx", "javascript", "js", "jsx"] },
+    action: { type: "string", enum: [...actions], description: "outline needs paths (or path); search needs paths, language and exactly one of pattern or rule; locate needs path and line; rewrite needs paths, language, replacement and exactly one of pattern or rule; apply needs previewId." },
+    paths: { type: "array", minItems: 1, maxItems: 20, items: { type: "string", minLength: 1, maxLength: 1024 }, description: "Files or directories relative to the current session directory. No globs or symbolic links. path is an accepted alias for a single entry." },
+    path: { type: "string", minLength: 1, maxLength: 1024, description: "Single path. Alias for paths when you have exactly one file or directory." },
+    language: { type: "string", enum: ["java", "python", "py", "c", "cpp", "c++", "cc", "cxx", "typescript", "ts", "tsx", "javascript", "js", "jsx"] },
     pattern: { type: "string", minLength: 1, maxLength: 2048, description: "ast-grep pattern, e.g. System.out.println($ARG). Mutually exclusive with rule." },
     rule: { type: "object", additionalProperties: true, description: "ast-grep Rule object. Supports kind, pattern context/selector, inside, has, all, any, not, etc." },
     constraints: { type: "object", additionalProperties: true },
@@ -31,14 +46,6 @@ export const inputSchema = {
     type: "object",
     properties,
     required: ["action"],
-    additionalProperties: false,
-    oneOf: [
-        { properties: { action: { const: "outline" } }, required: ["paths"] },
-        { properties: { action: { const: "search" } }, required: ["paths", "language"], oneOf: [{ required: ["pattern"] }, { required: ["rule"] }] },
-        { properties: { action: { const: "locate" } }, required: ["path", "line"] },
-        { properties: { action: { const: "rewrite" } }, required: ["paths", "language", "replacement"], oneOf: [{ required: ["pattern"] }, { required: ["rule"] }] },
-        { properties: { action: { const: "apply" } }, required: ["previewId"] },
-    ],
 } as const
 
 export class AstTool {
@@ -98,7 +105,9 @@ export class AstTool {
 
     private parse(value: unknown): AstInput {
         if (!value || typeof value !== "object" || Array.isArray(value)) throw new AstError("INPUT", "Expected an object.")
-        const input = value as Record<string, unknown>
+        const input = { ...(value as Record<string, unknown>) }
+        if (input.paths === undefined && typeof input.path === "string" && input.action !== "locate") input.paths = [input.path]
+        if (input.action !== "locate") delete input.path
         const allowed: Record<string, string[]> = {
             outline: ["action", "paths", "language", "limit"],
             search: ["action", "paths", "language", "pattern", "rule", "constraints", "utils", "limit"],
@@ -107,7 +116,9 @@ export class AstTool {
             apply: ["action", "previewId"],
         }
         const keys = typeof input.action === "string" && Object.hasOwn(allowed, input.action) ? allowed[input.action] : undefined
-        if (!keys || Object.keys(input).some((key) => !keys.includes(key))) throw new AstError("INPUT", "Unknown action or parameters not applicable to this action.")
+        if (!keys) throw new AstError("INPUT", `Unknown action. Allowed: ${Object.keys(allowed).join(", ")}.`)
+        const unknown = Object.keys(input).filter((key) => !keys.includes(key))
+        if (unknown.length) throw new AstError("INPUT", `Unknown parameter ${unknown.map((key) => `"${key}"`).join(", ")} for action ${input.action}. Allowed: ${keys.join(", ")}.`)
         for (const [key, value] of Object.entries(input)) {
             if (["language", "path", "pattern", "replacement", "previewId"].includes(key)
                 && (typeof value !== "string" || (key !== "replacement" && !value.length) || value.length > (key === "previewId" ? 64 : 2048))) {
@@ -119,21 +130,23 @@ export class AstTool {
             if (["rule", "constraints", "utils"].includes(key) && (!value || typeof value !== "object" || Array.isArray(value))) throw new AstError("INPUT", `Invalid ${key}.`)
         }
         if (["outline", "search", "rewrite"].includes(input.action as string) && (!Array.isArray(input.paths) || !input.paths.length || input.paths.length > 20
-            || input.paths.some((path) => typeof path !== "string" || !path.length || path.length > 1024))) throw new AstError("INPUT", "Provide 1 to 20 file or directory paths.")
-        if (["search", "rewrite"].includes(input.action as string) && (!input.language || (input.pattern === undefined) === (input.rule === undefined))) {
-            throw new AstError("INPUT", "Provide language and exactly one of pattern or rule.")
+            || input.paths.some((path) => typeof path !== "string" || !path.length || path.length > 1024))) {
+            throw new AstError("INPUT", `${input.action} requires paths (or path) with 1 to 20 entries.`)
         }
-        if (input.action === "rewrite" && input.replacement === undefined) throw new AstError("INPUT", "replacement is required.")
-        if (input.action === "locate" && (!input.path || !input.line)) throw new AstError("INPUT", "path and line are required.")
-        if (input.action === "apply" && !input.previewId) throw new AstError("INPUT", "previewId is required.")
+        if (["search", "rewrite"].includes(input.action as string) && (!input.language || (input.pattern === undefined) === (input.rule === undefined))) {
+            throw new AstError("INPUT", `${input.action} requires language and exactly one of pattern or rule.`)
+        }
+        if (input.action === "rewrite" && input.replacement === undefined) throw new AstError("INPUT", "rewrite requires replacement.")
+        if (input.action === "locate" && (!input.path || !input.line)) throw new AstError("INPUT", "locate requires path and line.")
+        if (input.action === "apply" && !input.previewId) throw new AstError("INPUT", "apply requires previewId.")
         return input as unknown as AstInput
     }
 
     private budget(result: Record<string, unknown>): void {
-        while (Buffer.byteLength(JSON.stringify(result)) > LIMITS.outputBytes) {
+        while (Buffer.byteLength(JSON.stringify(result, null, 2)) > LIMITS.outputBytes) {
             if (result.action === "rewrite" || result.action === "apply") throw new AstError("OUTPUT_LIMIT", "Result exceeds the output limit. Narrow paths.")
             const matches = result.matches as { text: string; textTruncated: boolean; captures: Record<string, unknown>; capturesTruncated: boolean }[] | undefined
-            const files = result.files as { items: { members?: unknown[] }[]; truncated: boolean }[] | undefined
+            const files = result.files as { items: OutlineEntry[]; truncated: boolean }[] | undefined
             const skipped = result.skipped as string[] | undefined
             if (skipped?.length) {
                 skipped.pop()
@@ -144,27 +157,30 @@ export class AstTool {
                     if (keys.length) {
                         delete matches[0].captures[keys.at(-1)!]
                         matches[0].capturesTruncated = true
-                    } else {
+                    } else if (matches[0].text.length > 1) {
                         matches[0].text = matches[0].text.slice(0, Math.floor(matches[0].text.length / 2))
                         matches[0].textTruncated = true
-                    }
+                    } else throw new AstError("OUTPUT_LIMIT", "Result exceeds the output limit. Narrow paths.")
                 }
             } else if (files?.length) {
-                if (files.length > 1) files.pop()
-                else if (files[0].items.length) {
-                    const item = files[0].items.at(-1)!
-                    if (item.members?.length) item.members.pop()
-                    else files[0].items.pop()
-                    files[0].truncated = true
-                } else throw new AstError("OUTPUT_LIMIT", "Result exceeds the output limit. Narrow paths.")
-            } else if (result.action === "locate" && result.block) {
-                const block = result.block as { text: string; truncated: boolean }
-                if (block.text.length) {
+                let trimmed = false
+                for (let index = files.length - 1; index >= 0 && !trimmed; index--) trimmed = trimMembers(files[index].items)
+                if (!trimmed) {
+                    const file = files.findLast((file) => file.items.length)
+                    if (file) {
+                        file.items.pop()
+                        file.truncated = true
+                    } else files.pop()
+                }
+            } else if (result.action === "locate") {
+                const block = result.block as { text: string; truncated: boolean } | null
+                const ancestors = result.ancestors as unknown[] | undefined
+                if (block?.text.length) {
                     block.text = block.text.slice(0, Math.floor(block.text.length / 2))
                     block.truncated = true
-                } else {
-                    (result.ancestors as unknown[]).pop()
-                }
+                } else if (ancestors?.length) {
+                    ancestors.pop()
+                } else throw new AstError("OUTPUT_LIMIT", "Result exceeds the output limit. Narrow paths.")
             } else {
                 throw new AstError("OUTPUT_LIMIT", "Result exceeds the output limit. Narrow paths.")
             }
@@ -179,10 +195,10 @@ export async function registerAstTool(context: Plugin.Context): Promise<() => Pr
     await context.tool.transform((editor) => {
         editor.add({
             name: "ast_grep",
-            description: "Inspect and rewrite AST structures in Java, Python, JS/TS/TSX. Use outline for signatures, search for structural pattern/rule matches, locate for the enclosing block at a position. Search, locate and rewrite honor ast-grep-ignore suppression comments. Use glob for filenames and grep for plain text instead. rewrite only returns a full diff and a session-bound previewId; apply consumes that preview with edit permission and stale-file checks. Never pass apply=true or write flags. Positions are one-based Unicode code-point columns, ends exclusive; byteOffset is zero-based UTF-8. This is syntax matching, not type-aware reference resolution.",
+            description: "Inspect and rewrite AST structures in Java, Python, JS/TS/TSX and C/C++. Use outline for signatures, search for structural pattern/rule matches, locate for the enclosing block at a position; path is accepted as a single-path alias of paths. Search, locate and rewrite honor ast-grep-ignore suppression comments. Use glob for filenames and grep for plain text instead. rewrite only returns a full diff and a session-bound previewId; apply consumes that preview with edit permission and stale-file checks. Never pass apply=true or write flags. Positions are one-based Unicode code-point columns, ends exclusive; byteOffset is zero-based UTF-8. This is syntax matching, not type-aware reference resolution.",
             input: inputSchema,
             output: outputSchema,
-            options: { codemode: true, pinned: true },
+            options: { codemode: false },
             execute: async (input, invocation) => {
                 try {
                     const session = await context.session.get({ sessionID: invocation.sessionID })
@@ -204,7 +220,7 @@ export async function registerAstTool(context: Plugin.Context): Promise<() => Pr
                     })
                     return { output, content: JSON.stringify(output) }
                 } catch (error) {
-                    if (error instanceof AstError) throw new ToolError({ message: error.message, metadata: { code: error.code, details: error.details } })
+                    if (error instanceof AstError) throw new ToolError({ message: error.message })
                     throw error
                 }
             },

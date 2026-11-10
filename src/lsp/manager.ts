@@ -1,7 +1,13 @@
 import { readFile } from "node:fs/promises"
+import { extname } from "node:path"
 import { LspClient } from "./client"
 import { familyFor, projectRoot, resolveServer, type Family } from "./servers"
-import { LspError, LIMITS, type FileDiagnostic } from "./types"
+import { LspError, LIMITS, type DiagnosticsResult, type FileDiagnostic } from "./types"
+
+const JDT_UNRESOLVED = /^The type (?:java|javax|jdk)\.[\w$.]+ cannot be resolved/
+const JDT_REASON = "The JDT classpath and JDK are not resolved yet; retry with a larger wait."
+const DRIVER_ARGUMENT = /^Invalid argument '.+' not allowed with/
+const CLANGD_FLAGS_REASON = "clangd parses this file as C because compile_flags.txt applies to every file. Map it in compile_commands.json or add -xc++-header to compile_flags.txt."
 
 interface ProjectState {
     readonly key: string
@@ -34,12 +40,15 @@ export class LspManager {
     private readonly projects = new Map<string, ProjectState>()
 
     async diagnose(input: DiagnoseInput): Promise<DiagnoseOutput> {
-        const files: FileDiagnostic[] = []
+        const found = new Map<string, FileDiagnostic>()
         const projects: DiagnoseOutput["projects"] = []
         const grouped = new Map<string, { state: ProjectState; paths: string[] }>()
         for (const path of input.paths.slice(0, LIMITS.files)) {
             const family = familyFor(path)
-            if (!family) continue
+            if (!family) {
+                found.set(path, { path, phase: "unavailable", diagnostics: [], reason: `Unsupported file type: ${extname(path) || path}` })
+                continue
+            }
             const root = await projectRoot(path, family, input.ceiling || input.directory)
             const key = `${family}:${root}`
             const entry = grouped.get(key) ?? { state: this.project(key, root, family), paths: [] }
@@ -50,12 +59,12 @@ export class LspManager {
             const job = state.queue.then(() => this.runProject(state, paths, input))
             state.queue = job.catch(() => undefined)
             return job.then((output) => {
-                files.push(...output.files)
+                for (const file of output.files) found.set(file.path, file)
                 projects.push(output.project)
             })
         }))
         this.sweep()
-        return { files, projects }
+        return { files: input.paths.slice(0, LIMITS.files).flatMap((path) => found.get(path) ?? []), projects }
     }
 
     async warm(paths: readonly string[], input: { directory: string; ceiling: string; install?: boolean }): Promise<void> {
@@ -107,18 +116,19 @@ export class LspManager {
             }
             return { files, project: { root: state.root, server: state.family, status: state.status, ...(state.error ? { error: state.error } : {}) } }
         }
-        const wait = input.wait
+        const deadline = Date.now() + Math.max(0, Math.min(input.wait, LIMITS.maxWait))
         for (const raw of paths) {
             let text: string
             try {
                 text = await readFile(raw, "utf8")
             } catch {
+                files.push({ path: raw, phase: "unavailable", diagnostics: [], reason: "File could not be read." })
                 continue
             }
             const path = raw
             try {
                 await client.sync(path, text)
-                const result = await client.diagnostics(path, wait)
+                const result = this.checkFamily(state, await client.diagnostics(path, Math.max(0, deadline - Date.now())))
                 files.push({ path, phase: result.phase, diagnostics: result.diagnostics, checkedAt: result.checkedAt, reason: result.reason })
             } catch (error) {
                 if (error instanceof LspError && error.code === "EXIT") {
@@ -131,6 +141,18 @@ export class LspManager {
             }
         }
         return { files, project: { root: state.root, server: client.spec.name, status: "ready" } }
+    }
+
+    private checkFamily(state: ProjectState, result: DiagnosticsResult): DiagnosticsResult {
+        if (result.phase !== "available" || !result.diagnostics.length) return result
+        if (state.family === "java" && result.diagnostics.some((diagnostic) => JDT_UNRESOLVED.test(diagnostic.message))) {
+            return { phase: "pending", diagnostics: [], reason: JDT_REASON }
+        }
+        if (state.family === "c") {
+            const driver = result.diagnostics.filter((diagnostic) => DRIVER_ARGUMENT.test(diagnostic.message))
+            if (driver.length === result.diagnostics.length) return { phase: "unavailable", diagnostics: [], reason: CLANGD_FLAGS_REASON }
+        }
+        return result
     }
 
     private async prewarm(state: ProjectState, install: boolean): Promise<void> {

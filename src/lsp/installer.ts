@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { mkdir, rename, rm, writeFile } from "node:fs/promises"
+import { mkdir, readdir, rename, rm, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { basename, join } from "node:path"
 import config from "./config/lsp.json"
@@ -108,12 +108,27 @@ export function serverDirectory(name: string, version: string): string {
     return join(cacheRoot(), "servers", `${name}-${version}`)
 }
 
+export function platformKey(): string {
+    return `${process.platform}-${process.arch}`
+}
+
+export function clangdBinary(): string {
+    return join(serverDirectory("clangd", config.c.clangd.version), "bin", WINDOWS ? "clangd.exe" : "clangd")
+}
+
 export function runtimeDirectory(name: string): string {
     return join(cacheRoot(), "runtimes", name)
 }
 
 export async function extract(archive: string, destination: string): Promise<void> {
     await mkdir(destination, { recursive: true })
+    if (archive.toLowerCase().endsWith(".zip")) {
+        const unzip = await findOnPath("unzip")
+        if (unzip) {
+            await run(unzip, ["-o", "-d", destination, archive])
+            return
+        }
+    }
     const tar = await findOnPath("tar") ?? (WINDOWS ? join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe") : "tar")
     await run(tar, ["-xf", archive, "-C", destination])
 }
@@ -180,6 +195,49 @@ export async function installJdtls(): Promise<string> {
     } finally {
         await release()
     }
+}
+
+export async function installClangd(): Promise<string> {
+    const { version, base, assets } = config.c.clangd
+    const key = platformKey()
+    const binary = clangdBinary()
+    if (await fileExists(binary)) return binary
+    const asset = (assets as Record<string, { file: string; sha256: string } | undefined>)[key]
+    if (!asset) throw new LspError("MISSING_SERVER", `clangd ${version} has no build for ${key}. Set OPENCODE_LSP_CLANGD to use a local clangd.`)
+    const release = await installLock(cacheRoot(), `clangd-${version}`)
+    try {
+        if (await fileExists(binary)) return binary
+        const archive = join(scratchRoot(), asset.file)
+        await download(`${base}/${version}/${asset.file}`, archive, asset.sha256)
+        const staging = `${serverDirectory("clangd", version)}.tmp-${process.pid}`
+        await rm(staging, { recursive: true, force: true })
+        try {
+            await extract(archive, staging)
+            const found = await findClangd(staging)
+            if (!found) throw new LspError("INSTALL", `The clangd archive did not contain ${WINDOWS ? "clangd.exe" : "clangd"}.`)
+            await mkdir(join(binary, ".."), { recursive: true })
+            await rename(found, binary)
+        } finally {
+            await rm(staging, { recursive: true, force: true })
+            await rm(archive, { force: true })
+        }
+        return binary
+    } finally {
+        await release()
+    }
+}
+
+async function findClangd(directory: string): Promise<string | undefined> {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name)
+        if (entry.isDirectory()) {
+            const found = await findClangd(path)
+            if (found) return found
+        } else if (entry.name === (WINDOWS ? "clangd.exe" : "clangd")) {
+            return path
+        }
+    }
+    return undefined
 }
 
 async function download(url: string, destination: string, checksum?: string): Promise<void> {

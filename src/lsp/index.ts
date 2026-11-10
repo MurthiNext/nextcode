@@ -10,9 +10,10 @@ import { assertInstallAllowed, registerLspTool } from "./tool"
 import { pathKey } from "./uri"
 
 const LSP_GUIDANCE = `# lsp
-Edits to Java, Python and JS/TS/TSX are checked by a persistent language server; its errors are attached to the edit result.
-- A server only starts when its runtime already exists locally: JDK ${config.java.jdk.feature}+ for Java, Python 3 for pyright, Node.js 18+ for JS/TS. Runtimes are never downloaded.
+Edits to Java, Python, JS/TS/TSX and C/C++ are checked by a persistent language server; its errors are attached to the edit result.
+- A server only starts when its runtime already exists locally: JDK ${config.java.jdk.feature}+ for Java, Python 3 for pyright, Node.js 18+ for JS/TS; C/C++ uses clangd and needs no extra runtime. Runtimes are never downloaded.
 - Use the lsp tool (action diagnostics) to wait out a cold start or Java indexing, or to confirm that a fix cleared earlier errors.
+- Java and C++ projects may need wait near the maximum on the first check because indexing is slow.
 - Only errors are reported automatically. Set warnings when warnings matter.
 - A pending check is not a passing check; do not claim the code is correct before it finishes.
 - Builds and tests remain the authority for runtime behaviour.`
@@ -21,6 +22,7 @@ interface SessionState {
     readonly paths: Set<string>
     readonly stale: Map<string, number>
     readonly reported: Map<string, string>
+    readonly noted: Set<string>
 }
 
 export interface LspOptions {
@@ -39,7 +41,7 @@ export async function registerLsp(context: Plugin.Context, options: LspOptions):
     const state = (sessionID: string): SessionState => {
         const existing = sessions.get(sessionID)
         if (existing) return existing
-        const created: SessionState = { paths: new Set<string>(), stale: new Map<string, number>(), reported: new Map<string, string>() }
+        const created: SessionState = { paths: new Set<string>(), stale: new Map<string, number>(), reported: new Map<string, string>(), noted: new Set<string>() }
         sessions.set(sessionID, created)
         if (sessions.size > 64) sessions.delete(sessions.keys().next().value!)
         return created
@@ -73,15 +75,21 @@ export async function registerLsp(context: Plugin.Context, options: LspOptions):
         const session = state(event.sessionID)
         for (const path of supported) session.paths.add(path)
         const allowed = options.install && await assertInstallAllowed(context, event, supported, directory).catch(() => false)
-        const result = await manager.diagnose({ paths: supported, directory, ceiling: directory, wait: 800, startup: 900, install: allowed })
-        const pending = result.files.filter((file) => file.phase !== "available")
-        for (const file of result.files) {
-            if (file.phase === "available") session.stale.delete(file.path)
-            else session.stale.set(file.path, Date.now())
-        }
+        const result = await manager.diagnose({ paths: supported, directory, ceiling: directory, wait: 1500, startup: 1200, install: allowed })
         const blocks: string[] = []
         const cleared: string[] = []
+        const fresh: string[] = []
         for (const file of result.files) {
+            if (file.phase === "available") {
+                session.stale.delete(file.path)
+                session.noted.delete(file.path)
+            } else {
+                session.stale.set(file.path, Date.now())
+                if (file.phase === "pending") {
+                    if (!session.noted.has(file.path)) fresh.push(file.path)
+                    continue
+                }
+            }
             const text = await readFile(file.path, "utf8").catch(() => undefined)
             const block = formatFile(file, { root: directory, warnings: options.warnings, text })
             if (!block) {
@@ -94,8 +102,12 @@ export async function registerLsp(context: Plugin.Context, options: LspOptions):
         }
         const notes: string[] = []
         if (cleared.length) notes.push(`${cleared.join(", ")}: no errors reported now.`)
-        if (pending.some((file) => file.phase === "pending")) notes.push("Analysis is still running for at least one file; results will follow.")
-        if (pending.some((file) => file.phase === "stale")) notes.push("Some diagnostics are older than the current file; the lsp tool can refresh them.")
+        if (fresh.length) {
+            for (const path of fresh) session.noted.add(path)
+            const labels = fresh.slice(0, 4).map((path) => relativeLabel(path, directory))
+            notes.push(`analysis pending: ${labels.join(", ")}${fresh.length > 4 ? ` (+${fresh.length - 4} more)` : ""} — results will follow`)
+        }
+        if (result.files.some((file) => file.phase === "stale")) notes.push("Some diagnostics are older than the current file; the lsp tool can refresh them.")
         if (!blocks.length && !notes.length) return
         append(event.result, [`# lsp diagnostics`, ...blocks, ...notes].join("\n"))
     })

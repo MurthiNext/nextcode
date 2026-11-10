@@ -21,7 +21,12 @@ export const inputSchema = {
             items: { type: "string", minLength: 1, maxLength: 1024 },
             description: "Files relative to the session directory. Defaults to files edited in this session.",
         },
-        wait: { type: "integer", minimum: 0, maximum: LIMITS.maxWait, description: "Milliseconds to wait for analysis, default 5000." },
+        wait: {
+            type: "integer",
+            minimum: 0,
+            maximum: LIMITS.maxWait,
+            description: "Analysis budget in milliseconds for the whole call, not per file (default 5000). Java and C++ on a cold index usually need 12000-15000.",
+        },
         warnings: { type: "boolean", description: "Include warnings in addition to errors." },
     },
     required: ["action"],
@@ -68,7 +73,7 @@ export class LspTool {
         const directory = await this.options.directory(execution.sessionID)
         const requested = input.paths ?? this.options.tracked(execution.sessionID)
         const paths = requested.map((path) => isAbsolute(path) ? path : resolve(directory, path))
-        if (!paths.length) throw new LspError("NO_FILES", "No files to check. Pass paths or edit a supported file first.")
+        if (!paths.length) throw new LspError("NO_FILES", "No files to check. Pass paths or edit a supported file first; unsupported extensions are reported per file as unavailable.")
         await execution.permission("read", paths)
         this.options.track(execution.sessionID, directory, requested)
         const reason = await requiresInstall(paths, directory)
@@ -131,10 +136,10 @@ export async function registerLspTool(context: Plugin.Context, options: LspToolO
     const registration = await context.tool.transform((editor) => {
         editor.add({
             name: "lsp",
-            description: `Read syntax and semantic diagnostics for Java, Python and JS/TS/TSX from a persistent language server. Edits are checked automatically; use this to wait out a cold start or Java indexing, or to confirm that a fix cleared previous errors. A server starts only when its runtime is already installed locally (JDK ${config.java.jdk.feature}+ for Java, Python 3 for pyright, Node.js 18+ for JS/TS); runtimes are never downloaded. Lines are one-based and columns count Unicode code points. This is type-aware analysis, not a build or test run.`,
+            description: `Read syntax and semantic diagnostics for Java, Python, JS/TS/TSX and C/C++ from a persistent language server. wait is a budget for the whole call, not per file; Java and C++ on a cold index usually need 12000-15000. Edits are checked automatically; use this to wait out a cold start or Java indexing, or to confirm that a fix cleared previous errors. A server starts only when its runtime is already installed locally (JDK ${config.java.jdk.feature}+ for Java, Python 3 for pyright, Node.js 18+ for JS/TS; clangd needs no extra runtime); runtimes are never downloaded. Lines are one-based and columns count Unicode code points. This is type-aware analysis, not a build or test run.`,
             input: inputSchema,
             output: outputSchema,
-            options: { codemode: true },
+            options: { codemode: false },
             execute: async (input, invocation) => {
                 try {
                     const output = await tool.execute(input, {
@@ -155,7 +160,7 @@ export async function registerLspTool(context: Plugin.Context, options: LspToolO
                     const { text: _text, ...rest } = output
                     return { output: rest, content: text }
                 } catch (error) {
-                    if (error instanceof LspError) throw new ToolError({ message: error.message, metadata: { code: error.code, details: error.details } })
+                    if (error instanceof LspError) throw new ToolError({ message: error.message })
                     throw error
                 }
             },

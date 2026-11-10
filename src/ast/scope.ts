@@ -68,7 +68,7 @@ export class FileScope {
             if (!info.isFile()) return
             let detected: Language
             try { detected = languageFor(path, true) } catch { return }
-            if (language && detected !== language) return
+            if (language && detected !== language && !(language === "c" && [".h", ".hh", ".hxx", ".inl", ".ipp"].includes(extname(path)))) return
             await this.validate(path)
             if (info.size > LIMITS.fileBytes) {
                 skipped.push(this.label(path))

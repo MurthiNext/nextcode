@@ -5,14 +5,14 @@ import config from "./config/lsp.json"
 import type { ServerSpec } from "./client"
 import { fileExists } from "./fs"
 import {
-    findOnPath, installJdtls, installPackage, javaMajor, packagedScript, pythonMajor,
+    clangdBinary, findOnPath, installClangd, installJdtls, installPackage, javaMajor, packagedScript, pythonMajor,
     resolveJava, resolveNode, resolvePython, runtimeDirectory, serverDirectory,
 } from "./installer"
 import { LspError } from "./types"
 
 const WINDOWS = process.platform === "win32"
 
-export type Family = "python" | "javascript" | "java"
+export type Family = "python" | "javascript" | "java" | "c"
 
 const FAMILY_BY_LANGUAGE: Partial<Record<Language, Family>> = {
     python: "python",
@@ -21,12 +21,15 @@ const FAMILY_BY_LANGUAGE: Partial<Record<Language, Family>> = {
     tsx: "javascript",
     javascript: "javascript",
     jsx: "javascript",
+    c: "c",
+    cpp: "c",
 }
 
 const MARKERS: Record<Family, readonly string[]> = {
     python: ["pyrightconfig.json", "pyproject.toml", "setup.cfg", "setup.py"],
     javascript: ["tsconfig.json", "jsconfig.json", "package.json"],
     java: ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"],
+    c: ["compile_commands.json", "compile_flags.txt", "CMakeLists.txt", "Makefile", "makefile", "meson.build", "BUILD.bazel", "WORKSPACE"],
 }
 
 const VENV_PYTHON = ["Scripts/python.exe", "bin/python", "Scripts/python3.exe", "bin/python3"]
@@ -55,6 +58,7 @@ export async function projectRoot(path: string, family: Family, ceiling: string)
 export async function resolveServer(family: Family, root: string, options: { install: boolean }): Promise<ResolvedServer> {
     if (family === "python") return pythonServer(root, options)
     if (family === "javascript") return javascriptServer(root, options)
+    if (family === "c") return clangdServer(root, options)
     return javaServer(root, options)
 }
 
@@ -149,18 +153,55 @@ function languageServerSpec(entry: string, root: string, node: string, tsdk?: st
     }
 }
 
+async function clangdServer(root: string, options: { install: boolean }): Promise<ResolvedServer> {
+    const configured = process.env.OPENCODE_LSP_CLANGD
+    const local = configured && await fileExists(configured) ? configured : undefined
+    const system = local ? undefined : await findOnPath("clangd")
+    const database = await fileExists(join(root, "compile_commands.json")) || await fileExists(join(root, "compile_flags.txt"))
+    return {
+        name: local ? "clangd · configured" : system ? "clangd · system" : `clangd ${config.c.clangd.version}`,
+        spec: {
+            name: "clangd",
+            command: local ?? system ?? await managedClangd(options),
+            args: [
+                "--background-index",
+                "--clang-tidy=false",
+                "--header-insertion=never",
+                "--pch-storage=memory",
+                ...(database ? [`--compile-commands-dir=${root}`] : []),
+            ],
+            cwd: root,
+            pull: false,
+        },
+    }
+}
+
+async function managedClangd(options: { install: boolean }): Promise<string> {
+    const binary = clangdBinary()
+    if (await fileExists(binary)) return binary
+    if (!options.install) throw new LspError("MISSING_SERVER", `clangd ${config.c.clangd.version} is not installed. Install clangd, set OPENCODE_LSP_CLANGD or enable lsp.install.`)
+    return installClangd()
+}
+
 async function javaServer(root: string, options: { install: boolean }): Promise<ResolvedServer> {
     const java = await requireJava()
     const jdtls = await jdtlsDirectory(options)
     const launcher = await launcherJar(jdtls)
     if (!launcher) throw new LspError("INSTALL", "The jdtls installation has no Equinox launcher.")
     const platform = process.platform === "win32" ? "config_win" : process.platform === "darwin" ? "config_mac" : "config_linux"
+    const runtime = await resolveJava()
     const settings = {
         java: {
             import: { gradle: { enabled: true }, maven: { enabled: true } },
             completion: { guessMethodArguments: false },
             referencesCodeLens: { enabled: false },
             implementationsCodeLens: { enabled: false },
+            ...(runtime ? {
+                configuration: {
+                    runtimes: [{ name: `JavaSE-${config.java.jdk.feature}`, path: runtime, default: true }],
+                },
+            } : {}),
+            jdt: { ls: { java: { home: runtime ?? java } } },
         },
     }
     return {
