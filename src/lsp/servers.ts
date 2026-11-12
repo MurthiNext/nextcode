@@ -6,9 +6,10 @@ import type { ServerSpec } from "./client"
 import { fileExists } from "./fs"
 import {
     clangdBinary, findOnPath, installClangd, installJdtls, installPackage, javaHome, javaMajor, packagedScript, pythonMajor,
-    resolveJava, resolveNode, resolvePython, runtimeDirectory, serverDirectory,
+    resolveJava, resolveNode, resolvePython, serverDirectory,
 } from "./installer"
 import { LspError } from "./types"
+import { workspaceDirectory } from "./workspace"
 
 const WINDOWS = process.platform === "win32"
 
@@ -220,7 +221,7 @@ async function javaServer(root: string, options: { install: boolean }): Promise<
                 "--add-opens", "java.base/java.lang=ALL-UNNAMED",
                 "-jar", launcher,
                 "-configuration", join(jdtls, platform),
-                "-data", join(runtimeDirectory("jdtls-workspaces"), workspaceKey(root)),
+                "-data", workspaceDirectory(root),
             ],
             cwd: root,
             initializationOptions: {
@@ -332,10 +333,4 @@ async function pythonInterpreter(root: string): Promise<string | undefined> {
         }
     }
     return undefined
-}
-
-function workspaceKey(value: string): string {
-    let result = 0
-    for (let index = 0; index < value.length; index++) result = (result * 31 + value.charCodeAt(index)) | 0
-    return Math.abs(result).toString(36)
 }

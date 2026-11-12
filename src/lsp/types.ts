@@ -13,6 +13,7 @@ export const LIMITS = {
     progressStale: 30_000,
     poll: 150,
     idle: 20 * 60 * 1000,
+    workspaceStale: 30 * 60 * 1000,
     lockWait: 300_000,
     lockStale: 15 * 60 * 1000,
 } as const

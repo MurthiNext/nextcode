@@ -3,6 +3,7 @@ import { extname } from "node:path"
 import { LspClient } from "./client"
 import { familyFor, projectRoot, resolveServer, type Family } from "./servers"
 import { LspError, LIMITS, type DiagnosticsResult, type FileDiagnostic } from "./types"
+import { pruneWorkspaces, workspaceKey } from "./workspace"
 
 const JDT_UNRESOLVED = /^The type (?:java|javax|jdk)\.[\w$.]+ cannot be resolved/
 const JDT_REASON = "The JDT classpath and JDK are not resolved yet; retry with a larger wait."
@@ -38,6 +39,7 @@ export interface DiagnoseOutput {
 
 export class LspManager {
     private readonly projects = new Map<string, ProjectState>()
+    private prunedAt = 0
 
     async diagnose(input: DiagnoseInput): Promise<DiagnoseOutput> {
         const found = new Map<string, FileDiagnostic>()
@@ -249,5 +251,12 @@ export class LspManager {
                 this.projects.delete(key)
             }
         }
+        if (Date.now() < this.prunedAt + LIMITS.workspaceStale) return
+        this.prunedAt = Date.now()
+        const active = new Set([...this.projects.values()]
+            .filter((state) => state.family === "java" && state.client)
+            .map((state) => workspaceKey(state.root)))
+        // Deleting abandoned workspaces can remove hundreds of megabytes; never block a check on it.
+        void pruneWorkspaces(active).catch(() => undefined)
     }
 }
